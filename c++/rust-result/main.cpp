@@ -20,6 +20,12 @@ namespace // Library code
 			}
 		}
 
+		Result()
+			: value(std::nullopt)
+			, error(std::nullopt)
+		{
+
+		}
 		Result(Value value)
 			: value(value)
 			, error(std::nullopt)
@@ -81,11 +87,65 @@ namespace // Library code
 	{
 		return { error };
 	}
+}
+
+namespace // base classes
+{
+	struct ProcessInterface
+	{
+		virtual bool doWork() = 0;
+		virtual void callOnExit() = 0;
+	};
 
 	template<typename Value, typename Error>
-	struct Process
+	struct Process : public ProcessInterface
 	{
-		virtual Result<Value, Error> getResult() = 0;
+		using ResultType = Result<Value, Error>;
+		using BaseType = Process<Value, Error>;
+
+		Process(std::function<void(ResultType)> onExit)
+			: onExit(onExit)
+		{
+		}
+
+		void callOnExit() override
+		{
+			onExit(result);
+		}
+
+	protected:
+		void setResult(ResultType result)
+		{
+			this->result = result;
+		}
+	private:
+		std::function<void(ResultType)> onExit;
+		ResultType result;
+	};
+
+	struct ProcessMgr
+	{
+		void add(ProcessInterface* process)
+		{
+			proccess.push_back(process);
+		}
+		void update()
+		{
+			for (auto i = proccess.begin(); i != proccess.end(); ++i)
+			{
+				if ((*i)->doWork())
+				{
+					(*i)->callOnExit();
+					i = proccess.erase(i);
+					if (i == proccess.end())
+					{
+						break;
+					}
+				}
+			}
+		}
+	private:
+		std::vector<ProcessInterface*> proccess;
 	};
 }
 
@@ -112,35 +172,49 @@ namespace GetSaveGame
 
 	struct Process : public ::Process<SaveGame*, Error>
 	{
-		Result<SaveGame*, Error> getResult() override
+		Process(std::function<void(ResultType)> onExit)
+			: BaseType(onExit) { }
+
+		bool doWork() override
 		{
+			while (workload)
+			{
+				workload = rand() % 5;
+				return false;
+			}
+
 			bool networkFailed = rand() % 5;
 			if (networkFailed)
 			{
-				return err(Error{ Error::Reason::NoNetwork, "You pleb got no network" });
+				setResult(err(Error{ Error::Reason::NoNetwork, "You pleb got no network" }));
+				return true;
 			}
 
 			bool cloudFailed = rand() % 5;
 			if (cloudFailed)
 			{
-				return err(Error{ Error::Reason::CloudServerDown, "Could not reach cloud server at address 127.0.0.1" });
+				setResult(err(Error{ Error::Reason::CloudServerDown, "Could not reach cloud server at address 127.0.0.1" }));
+				return true;
 			}
 
 			bool localFailed = rand() % 5;
 			if (localFailed)
 			{
-				return err(Error{ Error::Reason::FileNotFound, "Could not find file..." });
+				setResult(err(Error{ Error::Reason::FileNotFound, "Could not find file..." }));
+				return true;
 			}
 
-			return ok(new SaveGame{ 42 });
+			setResult(ok(new SaveGame{ 42 }));
+			return true;
 		}
+	private:
+		int workload = 1;
 	};
 }
 
-int main()
+void handleGetSaveGameExit(GetSaveGame::Process::ResultType result)
 {
-	GetSaveGame::Process process;
-	process.getResult().match(
+	result.match(
 		[](GetSaveGame::SaveGame* saveGame)
 		{
 			std::cout << "Sucessfully got save game" << std::endl;
@@ -160,5 +234,15 @@ int main()
 				break;
 			}
 		}
-	);
+		);
+}
+
+int main()
+{
+	ProcessMgr mgr;
+	mgr.add(new GetSaveGame::Process(handleGetSaveGameExit));
+	for (size_t i = 0; i < 10; i++)
+	{
+		mgr.update();
+	}
 }
