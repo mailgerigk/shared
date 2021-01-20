@@ -1,45 +1,43 @@
 #include <optional>
 #include <string>
 #include <iostream>
+#include <functional>
+#include <variant>
+
+#include <ctime>
 
 namespace // Library code
 {
 	template<typename Value, typename Error>
 	struct Result
 	{
-		template<typename Ok, typename Err>
-		void match(Ok ok, Err err)
-		{
-			if (value.has_value())
-			{
-				ok(value.value());
-			}
-			else
-			{
-				err(error.value());
-			}
-		}
-
-		Result()
-			: value(std::nullopt)
-			, error(std::nullopt)
-		{
-
-		}
 		Result(Value value)
-			: value(value)
-			, error(std::nullopt)
+			: has_value(false)
+			, valueOrError(value)
 		{
 		}
 		Result(Error error)
-			: value(std::nullopt)
-			, error(error)
+			: has_value(false)
+			, valueOrError(error)
 		{
 		}
 
+		template<typename Ok, typename Err>
+		void match(Ok ok, Err err)
+		{
+			if (has_value)
+			{
+				ok(std::get<Value>(valueOrError));
+			}
+			else
+			{
+				err(std::get<Error>(valueOrError));
+			}
+		}
+
 	private:
-		std::optional<Value> value;
-		std::optional<Error> error;
+		bool has_value;
+		std::variant<Value, Error> valueOrError;
 	};
 
 	template<typename Value>
@@ -103,24 +101,7 @@ namespace // base classes
 		using ResultType = Result<Value, Error>;
 		using BaseType = Process<Value, Error>;
 
-		Process(std::function<void(ResultType)> onExit)
-			: onExit(onExit)
-		{
-		}
-
-		void callOnExit() override
-		{
-			onExit(result);
-		}
-
-	protected:
-		void setResult(ResultType result)
-		{
-			this->result = result;
-		}
-	private:
-		std::function<void(ResultType)> onExit;
-		ResultType result;
+		virtual ResultType getResult() = 0;
 	};
 
 	struct ProcessMgr
@@ -172,53 +153,77 @@ namespace GetSaveGame
 
 	struct Process : public ::Process<SaveGame*, Error>
 	{
-		Process(std::function<void(ResultType)> onExit)
-			: BaseType(onExit) { }
+		Process(std::function<void(Process&)> onExit)
+			: onExit(onExit)
+			, foundSaveGame(nullptr)
+			, encounterdError({})
+			, workload(1)
+		{
+		}
 
 		bool doWork() override
 		{
 			while (workload)
 			{
-				workload = rand() % 5;
+				workload = rand() % 2;
 				return false;
 			}
 
-			bool networkFailed = rand() % 5;
+			bool networkFailed = rand() % 2;
 			if (networkFailed)
 			{
-				setResult(err(Error{ Error::Reason::NoNetwork, "You pleb got no network" }));
+				encounterdError = Error{ Error::Reason::NoNetwork, "You pleb got no network" };
 				return true;
 			}
 
-			bool cloudFailed = rand() % 5;
+			bool cloudFailed = rand() % 2;
 			if (cloudFailed)
 			{
-				setResult(err(Error{ Error::Reason::CloudServerDown, "Could not reach cloud server at address 127.0.0.1" }));
+				encounterdError = Error{ Error::Reason::CloudServerDown, "Could not reach cloud server at address 127.0.0.1" };
 				return true;
 			}
 
-			bool localFailed = rand() % 5;
+			bool localFailed = rand() % 2;
 			if (localFailed)
 			{
-				setResult(err(Error{ Error::Reason::FileNotFound, "Could not find file..." }));
+				encounterdError = Error{ Error::Reason::FileNotFound, "Could not find file..." };
 				return true;
 			}
 
-			setResult(ok(new SaveGame{ 42 }));
+			foundSaveGame = new SaveGame{ 42 };
 			return true;
 		}
+
+		ResultType getResult() override
+		{
+			if (foundSaveGame)
+			{
+				return ok(foundSaveGame);
+			}
+			return err(encounterdError);
+		}
+
+		void callOnExit() override
+		{
+			onExit(*this);
+		}
 	private:
-		int workload = 1;
+		std::function<void(Process&)> onExit;
+		SaveGame* foundSaveGame;
+		Error encounterdError;
+		int workload;
 	};
 }
 
-void handleGetSaveGameExit(GetSaveGame::Process::ResultType result)
+void handleGetSaveGameExit(GetSaveGame::Process& process)
 {
-	result.match(
+	process.getResult().match(
+		// on success
 		[](GetSaveGame::SaveGame* saveGame)
 		{
 			std::cout << "Sucessfully got save game" << std::endl;
 		},
+		// on error
 		[](GetSaveGame::Error error)
 		{
 			switch (error.reason)
@@ -234,11 +239,12 @@ void handleGetSaveGameExit(GetSaveGame::Process::ResultType result)
 				break;
 			}
 		}
-		);
+	);
 }
 
 int main()
 {
+	srand((unsigned int)time(nullptr));
 	ProcessMgr mgr;
 	mgr.add(new GetSaveGame::Process(handleGetSaveGameExit));
 	for (size_t i = 0; i < 10; i++)
